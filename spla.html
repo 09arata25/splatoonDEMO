@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Ink Shooter - Ultra Landing Complete</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; pointer-events: none; text-shadow: 1px 1px 2px black; line-height: 1.6; }
+        #special-ui { 
+            position: absolute; top: 10px; right: 10px; width: 200px; height: 30px; 
+            background: rgba(0,0,0,0.5); border: 2px solid white;
+        }
+        #special-bar { width: 0%; height: 100%; background: #00ff00; transition: width 0.1s; box-shadow: 0 0 15px #00ff00; }
+        #special-hint { position: absolute; top: 45px; right: 10px; color: #00ff00; font-weight: bold; display: none; text-shadow: 1px 1px 2px black; animation: blink 0.5s infinite alternate; }
+        @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.9);
+            border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+<div id="ui">
+    <b>WASD</b>: 移動 | <b>Shift</b>: 潜伏・壁登り<br>
+    <b>左クリック</b>: 射撃 | <b>右クリック / Q</b>: ボム<br>
+    <b>Space</b>: ジャンプ | <b>E</b>: スペシャル<br>
+    <b>I / O</b>: 視点近接・遠隔
+</div>
+    <div id="special-ui"><div id="special-bar"></div></div>
+    <div id="special-hint">SPECIAL READY (E)</div>
+    <div id="crosshair"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 設定 ---
+        const INK_COLOR = "#00ff00";
+        const FIELD_SIZE = 300;
+        const CANVAS_RES = 1024;
+        const paintableObjects = [];
+        const bullets = [];
+        const bombs = [];
+        let specialPoints = 0;
+        const SPECIAL_MAX = 100;
+        let isSpecialActive = false;
+
+        // --- オーディオシステム ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(freq, type, volume, duration, slide = 0) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, now);
+            if (slide > 0) osc.frequency.exponentialRampToValueAtTime(slide, now + duration);
+            gain.gain.setValueAtTime(volume, now);
+            gain.gain.linearRampToValueAtTime(0, now + duration);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + duration);
+        }
+
+        function playShootSound() { playSound(400, 'triangle', 0.15, 0.1, 10); }
+        function playExplosionSound() { playSound(120, 'sine', 0.6, 0.5, 0.01); }
+        function playSpecialCharge() { playSound(150, 'sawtooth', 0.4, 0.8, 900); }
+function playSpecialExplosion() {
+    const now = audioCtx.currentTime;
+    // 1. 超低音の地響き (Sine)
+    playSound(40, 'sine', 1.2, 2.5, 1);
+    // 2. 爆発の芯 (Square)
+    playSound(60, 'square', 0.8, 1.2, 20);
+    // 3. 衝撃音 (Noise/Sawtooth)
+    playSound(150, 'sawtooth', 0.6, 0.5, 10);
+    // 4. 残響（金属的な鳴り）
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(300, now);
+    osc.frequency.exponentialRampToValueAtTime(10, now + 2.0);
+    g.gain.setValueAtTime(0.3, now);
+    g.gain.linearRampToValueAtTime(0, now + 2.0);
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.start(); osc.stop(now + 2.0);
+}
+
+        // --- シーン構築 ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(100, 200, 100);
+        scene.add(dirLight);
+
+        function createPaintable(geometry, x, y, z, rotX = 0, rotY = 0, isWall = false, worldSize = 10) {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = CANVAS_RES;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = isWall ? "#555" : "#bbb";
+            ctx.fillRect(0, 0, CANVAS_RES, CANVAS_RES);
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.9 });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(x, y, z);
+            mesh.rotation.set(rotX, rotY, 0);
+            mesh.userData = { ctx, texture, isWall, worldSize };
+            scene.add(mesh);
+            paintableObjects.push(mesh);
+            return mesh;
+        }
+
+        function createBuilding(x, z, w, h, d) {
+            createPaintable(new THREE.PlaneGeometry(w, h), x, h/2, z + d/2, 0, 0, true, w); 
+            createPaintable(new THREE.PlaneGeometry(w, h), x, h/2, z - d/2, 0, Math.PI, true, w); 
+            createPaintable(new THREE.PlaneGeometry(d, h), x + w/2, h/2, z, 0, Math.PI/2, true, d); 
+            createPaintable(new THREE.PlaneGeometry(d, h), x - w/2, h/2, z, 0, -Math.PI/2, true, d); 
+            createPaintable(new THREE.PlaneGeometry(w, d), x, h, z, -Math.PI/2, 0, true, w); 
+        }
+
+        createPaintable(new THREE.PlaneGeometry(FIELD_SIZE, FIELD_SIZE), 0, 0, 0, -Math.PI / 2, 0, false, FIELD_SIZE);
+        createBuilding(0, -50, 40, 20, 40);
+        createBuilding(60, 30, 30, 15, 30);
+        createBuilding(-60, 40, 20, 30, 20);
+
+        const player = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.8, 0.8), new THREE.MeshStandardMaterial({ color: 0xff4400 }));
+        body.position.y = 0.9;
+        player.add(body);
+        scene.add(player);
+        const cameraHolder = new THREE.Group();
+        cameraHolder.position.y = 1.8;
+        player.add(cameraHolder);
+        cameraHolder.add(camera);
+        camera.position.set(0, 0.5, 6);
+
+        let move = { fwd: false, bwd: false, lft: false, rgt: false };
+        let isShooting = false, isSubmerged = false, yVelocity = 0, pitch = 0;
+        const raycaster = new THREE.Raycaster();
+
+        function updateSpecialUI() {
+            const bar = document.getElementById('special-bar');
+            const hint = document.getElementById('special-hint');
+            const percent = Math.min(100, (specialPoints / SPECIAL_MAX) * 100);
+            bar.style.width = percent + '%';
+            hint.style.display = percent >= 100 ? 'block' : 'none';
+        }
+
+        // --- 入力制御 ---
+        window.addEventListener('keydown', (e) => {
+            if(e.code === 'KeyW') move.fwd = true;
+            if(e.code === 'KeyS') move.bwd = true;
+            if(e.code === 'KeyA') move.lft = true;
+            if(e.code === 'KeyD') move.rgt = true;
+            if(e.code === 'KeyQ') throwBomb();
+            if(e.code === 'KeyE') activateSpecial();
+            if(e.code === 'Space' && player.position.y <= 0.1) yVelocity = 0.25;
+            if(e.code === 'ShiftLeft') isSubmerged = true;
+            // --- カメラ距離の調整用 (keydownイベント内に追加) ---
+if (e.code === 'KeyO') {
+    // カメラを引く (最大距離 15 程度に制限)
+    camera.position.z = Math.min(camera.position.z + 0.5, 15);
+}
+if (e.code === 'KeyI') {
+    // カメラを近づける (最小距離 0.1 程度に制限)
+    camera.position.z = Math.max(camera.position.z - 0.5, 0.1);
+}
+        });
+        window.addEventListener('keyup', (e) => {
+            if(e.code === 'KeyW') move.fwd = false;
+            if(e.code === 'KeyS') move.bwd = false;
+            if(e.code === 'KeyA') move.lft = false;
+            if(e.code === 'KeyD') move.rgt = false;
+            if(e.code === 'ShiftLeft') isSubmerged = false;
+        });
+        document.addEventListener('mousedown', (e) => {
+            if (e.button === 0) isShooting = true;
+            if (e.button === 2) throwBomb();
+        });
+        document.addEventListener('mouseup', (e) => { if (e.button === 0) isShooting = false; });
+        document.addEventListener('click', () => renderer.domElement.requestPointerLock());
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement === renderer.domElement) {
+                player.rotation.y -= e.movementX * 0.003;
+                pitch -= e.movementY * 0.002;
+                pitch = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, pitch));
+                cameraHolder.rotation.x = pitch;
+            }
+        });
+
+        // --- ペイント・色判定 ---
+        function paintAt(obj, uv, sizeFactor = 1) {
+            const { ctx, texture, worldSize } = obj.userData;
+            if (!uv) return;
+            const u = uv.x * CANVAS_RES;
+            const v = (1 - uv.y) * CANVAS_RES;
+            const targetRealRadius = 4 * sizeFactor; 
+            const pixelRadius = (targetRealRadius / worldSize) * CANVAS_RES;
+            ctx.fillStyle = INK_COLOR;
+            ctx.beginPath(); ctx.arc(u, v, pixelRadius, 0, Math.PI * 2); ctx.fill();
+            texture.needsUpdate = true;
+            if (!isSpecialActive) {
+                specialPoints += 0.25 * sizeFactor;
+                updateSpecialUI();
+            }
+        }
+
+        function checkInkColor(obj, uv) {
+            if (!uv) return false;
+            const { ctx } = obj.userData;
+            const u = Math.floor(uv.x * CANVAS_RES);
+            const v = Math.floor((1 - uv.y) * CANVAS_RES);
+            const data = ctx.getImageData(u, v, 1, 1).data;
+            return data[1] > 140 && data[0] < 100;
+        }
+
+        // --- ボム ---
+        function throwBomb() {
+            if (isSubmerged || isSpecialActive) return;
+            const bomb = new THREE.Mesh(
+                new THREE.SphereGeometry(0.6),
+                new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 0.5 })
+            );
+            bomb.position.copy(player.position).add(new THREE.Vector3(0, 1.5, 0));
+            const targetDir = new THREE.Vector3();
+            camera.getWorldDirection(targetDir);
+            bomb.userData = { 
+                velocity: targetDir.multiplyScalar(0.8).add(new THREE.Vector3(0, 0.4, 0)),
+                timer: 0, life: 1.5
+            };
+            scene.add(bomb); bombs.push(bomb);
+        }
+
+        // --- スペシャル：ウルトラチャクチ（完全版） ---
+        async function activateSpecial() {
+    if (specialPoints < SPECIAL_MAX || isSpecialActive) return;
+    isSpecialActive = true; specialPoints = 0; updateSpecialUI();
+    playSpecialCharge();
+    
+    // 演出用の巨拳（発光強化）
+    const fistMat = new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 2 });
+    const fistL = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.5, 2.5), fistMat);
+    const fistR = fistL.clone();
+    scene.add(fistL, fistR);
+
+    // 上昇アニメーション（パーティクルを纏う）
+    for(let i=0; i<30; i++) {
+        player.position.y += 0.55;
+        fistL.position.copy(player.position).add(new THREE.Vector3(-3.5, Math.sin(i*0.8)*1.5, 0));
+        fistR.position.copy(player.position).add(new THREE.Vector3(3.5, Math.cos(i*0.8)*1.5, 0));
+        if(i % 5 === 0) createSplashParticle(player.position);
+        await new Promise(r => setTimeout(r, 16));
+    }
+
+    await new Promise(r => setTimeout(r, 200)); // 頂点で静止
+    playSpecialExplosion(); // 降下開始直前に音を重ねる
+
+    // 急降下
+    while(player.position.y > 0.5) {
+        player.position.y -= 2.5; // 超高速降下
+        fistL.position.y = player.position.y;
+        fistR.position.y = player.position.y;
+        await new Promise(r => setTimeout(r, 10));
+    }
+
+    // 着地：超大量の爆風処理
+    createSplashParticle(player.position);
+    const shockwaves = [];
+    for(let i=0; i<3; i++) { // 3重の波紋
+        const sw = new THREE.Mesh(
+            new THREE.TorusGeometry(1, 0.2, 16, 100),
+            new THREE.MeshBasicMaterial({ color: INK_COLOR, transparent: true, opacity: 1 })
+        );
+        sw.rotation.x = Math.PI / 2;
+        sw.position.copy(player.position);
+        scene.add(sw);
+        shockwaves.push(sw);
+    }
+
+    // 広範囲塗布 (512本に増量：きめ細かさMAX)
+    for (let j = 0; j < 512; j++) {
+        const angle = (j / 512) * Math.PI * 2;
+        const tilt = (Math.random() - 0.85) * Math.PI * 0.6; 
+        const dir = new THREE.Vector3(Math.cos(angle), Math.sin(tilt), Math.sin(angle)).normalize();
+        raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1, 0)), dir);
+        const hits = raycaster.intersectObjects(paintableObjects);
+        if (hits.length > 0 && hits[0].distance < 60) {
+            paintAt(hits[0].object, hits[0].uv, 4.5 * (1 - hits[0].distance / 65) + 1.5);
+        }
+    }
+
+    // 波紋アニメーション
+    let swScale = 0;
+    const swInt = setInterval(() => {
+        swScale += 2.0;
+        shockwaves.forEach((sw, idx) => {
+            const s = swScale * (1 - idx * 0.2);
+            if(s > 0) {
+                sw.scale.set(s, s, s);
+                sw.material.opacity -= 0.03;
+            }
+        });
+        if(shockwaves[0].material.opacity <= 0) {
+            clearInterval(swInt);
+            shockwaves.forEach(sw => scene.remove(sw));
+            scene.remove(fistL, fistR);
+            isSpecialActive = false;
+        }
+    }, 20);
+}
+function createSplashParticle(pos) {
+    const group = new THREE.Group();
+    for(let i=0; i<40; i++) {
+        const p = new THREE.Mesh(
+            new THREE.SphereGeometry(Math.random() * 0.5 + 0.2),
+            new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR })
+        );
+        const phi = Math.random() * Math.PI * 2;
+        const theta = Math.random() * Math.PI;
+        const speed = Math.random() * 1.5 + 0.5;
+        p.userData.vel = new THREE.Vector3(
+            Math.sin(theta) * Math.cos(phi) * speed,
+            Math.cos(theta) * speed + 0.5,
+            Math.sin(theta) * Math.sin(phi) * speed
+        );
+        group.add(p);
+    }
+    group.position.copy(pos);
+    scene.add(group);
+    let life = 1.0;
+    const animateP = () => {
+        life -= 0.02;
+        group.children.forEach(p => {
+            p.position.add(p.userData.vel);
+            p.userData.vel.y -= 0.05; // 重力
+            p.scale.multiplyScalar(0.95);
+        });
+        if(life > 0) requestAnimationFrame(animateP);
+        else scene.remove(group);
+    };
+    animateP();
+}
+
+        // --- メインループ ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. 環境判定
+            raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1, 0)), new THREE.Vector3(0, -1, 0));
+            const groundHits = raycaster.intersectObjects(paintableObjects);
+            const isOnInk = groundHits.length > 0 && checkInkColor(groundHits[0].object, groundHits[0].uv);
+            const forwardDir = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+            
+            const rayOrigin = player.position.clone().add(new THREE.Vector3(0, 1, 0)).add(forwardDir.clone().multiplyScalar(-0.5));
+            raycaster.set(rayOrigin, forwardDir);
+            const wallHits = raycaster.intersectObjects(paintableObjects.filter(o => o.userData.isWall));
+            const isFacingPaintedWall = isSubmerged && wallHits.length > 0 && wallHits[0].distance < 2.0 && checkInkColor(wallHits[0].object, wallHits[0].uv);
+
+            // 2. 移動 (スペシャル中は操作・重力停止)
+            if (!isSpecialActive) {
+                let speed = isSubmerged ? (isOnInk ? 0.38 : 0.05) : 0.18;
+                body.visible = !(isSubmerged && isOnInk);
+                body.scale.set(1, isSubmerged ? 0.2 : 1, 1);
+
+                if (isFacingPaintedWall) {
+                    yVelocity = 0;
+                    if (move.fwd) player.position.y += 0.22;
+                    if (move.bwd) player.position.y -= 0.22;
+                    player.position.y = Math.max(0, player.position.y);
+                    const topCheckOrigin = player.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+                    raycaster.set(topCheckOrigin, forwardDir);
+                    if (move.fwd && raycaster.intersectObjects(paintableObjects.filter(o => o.userData.isWall)).length === 0) {
+                        player.position.y += 1.2; player.position.add(forwardDir.clone().multiplyScalar(2.5));
+                    }
+                    player.position.add(forwardDir.clone().multiplyScalar(wallHits[0].distance - 1.3));
+                } else {
+                    const moveVec = new THREE.Vector3();
+                    if (move.fwd) moveVec.z -= 1; if (move.bwd) moveVec.z += 1;
+                    if (move.lft) moveVec.x -= 1; if (move.rgt) moveVec.x += 1;
+                    if (moveVec.length() > 0) {
+                        moveVec.normalize().applyQuaternion(player.quaternion).multiplyScalar(speed);
+                        const checkRay = new THREE.Raycaster(player.position.clone().add(new THREE.Vector3(0, 0.5, 0)), moveVec.clone().normalize(), 0, 1.2);
+                        if (checkRay.intersectObjects(paintableObjects.filter(o => o.userData.isWall)).length === 0) player.position.add(moveVec);
+                    }
+                    player.position.y += yVelocity;
+                    if (player.position.y > 0) {
+                        yVelocity -= 0.012;
+                        if (yVelocity < 0) {
+                            raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1, 0)), new THREE.Vector3(0, -1, 0));
+                            const landHits = raycaster.intersectObjects(paintableObjects);
+                            if (landHits.length > 0 && landHits[0].distance < 1.05) { player.position.y = landHits[0].point.y; yVelocity = 0; }
+                        }
+                    } else { player.position.y = 0; yVelocity = 0; }
+                }
+            }
+
+            // 3. ボム更新
+            for (let i = bombs.length - 1; i >= 0; i--) {
+                const b = bombs[i];
+                b.position.add(b.userData.velocity); b.userData.velocity.y -= 0.02;
+                raycaster.set(b.position, b.userData.velocity.clone().normalize());
+                if (raycaster.intersectObjects(paintableObjects).length > 0 && raycaster.intersectObjects(paintableObjects)[0].distance < 0.6) b.userData.velocity.set(0,0,0);
+                b.userData.timer += 0.016;
+                const s = 1 + Math.sin(b.userData.timer * 20) * 0.1 + (b.userData.timer / b.userData.life);
+                b.scale.set(s, s, s);
+                if (b.userData.timer >= b.userData.life) {
+                    playExplosionSound();
+                    for (let j = 0; j < 16; j++) {
+                        const angle = (j / 16) * Math.PI * 2;
+                        const dir = new THREE.Vector3(Math.cos(angle), -0.5, Math.sin(angle)).normalize();
+                        raycaster.set(b.position, dir);
+                        const eHits = raycaster.intersectObjects(paintableObjects);
+                        if (eHits.length > 0 && eHits[0].distance < 12) paintAt(eHits[0].object, eHits[0].uv, 3.5);
+                    }
+                    scene.remove(b); bombs.splice(i, 1);
+                }
+            }
+
+            // 4. メイン射撃
+            if (isShooting && !isSubmerged && !isSpecialActive && Date.now() - (animate.lastShoot || 0) > 80) {
+                playShootSound();
+                const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.35), new THREE.MeshBasicMaterial({ color: INK_COLOR }));
+                bullet.position.copy(player.position).add(new THREE.Vector3(0, 1.5, 0));
+                const targetDir = new THREE.Vector3(); camera.getWorldDirection(targetDir);
+                bullet.userData.velocity = targetDir.multiplyScalar(1.3);
+                scene.add(bullet); bullets.push(bullet); animate.lastShoot = Date.now();
+            }
+
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                const prevPos = b.position.clone();
+                b.position.add(b.userData.velocity);
+                b.userData.velocity.y -= 0.022;
+                const moveVec = b.position.clone().sub(prevPos);
+                raycaster.set(prevPos, moveVec.normalize());
+                raycaster.far = moveVec.length() + 0.5;
+                const hits = raycaster.intersectObjects(paintableObjects);
+                if (hits.length > 0) {
+                    paintAt(hits[0].object, hits[0].uv, 1.2);
+                    scene.remove(b); bullets.splice(i, 1);
+                } else if (b.position.y < -10) {
+                    scene.remove(b); bullets.splice(i, 1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
