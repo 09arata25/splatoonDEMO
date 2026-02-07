@@ -34,7 +34,83 @@
 
     <script type="module">
         import * as THREE from 'three';
+// スマホ判定
+const isTouchDevice = 'ontouchstart' in window;
+if (isTouchDevice) {
+    document.getElementById('touch-controls').style.display = 'block';
+    document.getElementById('ui').style.display = 'none'; // PC用ヘルプを消す
+}
 
+// ジョイスティック変数
+let joyX = 0, joyY = 0;
+const stick = document.getElementById('joystick-stick');
+const base = document.getElementById('joystick-base');
+
+// タッチイベント処理
+base.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = base.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    
+    let dx = touch.clientX - centerX;
+    let dy = touch.clientY - centerY;
+    const dist = Math.min(60, Math.sqrt(dx*dx + dy*dy));
+    const angle = Math.atan2(dy, dx);
+    
+    joyX = (Math.cos(angle) * dist) / 60;
+    joyY = (Math.sin(angle) * dist) / 60;
+    
+    stick.style.transform = `translate(${joyX * 40}px, ${joyY * 40}px)`;
+    
+    // 移動フラグに反映
+    move.fwd = joyY < -0.3;
+    move.bwd = joyY > 0.3;
+    move.lft = joyX < -0.3;
+    move.rgt = joyX > 0.3;
+}, {passive: false});
+
+base.addEventListener('touchend', () => {
+    joyX = 0; joyY = 0;
+    stick.style.transform = `translate(0px, 0px)`;
+    move.fwd = move.bwd = move.lft = move.rgt = false;
+});
+
+// 視点操作（画面右側をドラッグ）
+let lastTouchX = 0, lastTouchY = 0;
+window.addEventListener('touchstart', (e) => {
+    if (e.touches[0].clientX > window.innerWidth / 2) {
+        lastTouchX = e.touches[0].clientX;
+        lastTouchY = e.touches[0].clientY;
+        isShooting = true; // 右画面タッチで射撃開始
+    }
+});
+
+window.addEventListener('touchmove', (e) => {
+    const touch = e.touches[0];
+    if (touch.clientX > window.innerWidth / 2) {
+        const dx = touch.clientX - lastTouchX;
+        const dy = touch.clientY - lastTouchY;
+        player.rotation.y -= dx * 0.008;
+        pitch -= dy * 0.005;
+        pitch = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, pitch));
+        cameraHolder.rotation.x = pitch;
+        lastTouchX = touch.clientX;
+        lastTouchY = touch.clientY;
+    }
+}, {passive: false});
+
+window.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0) isShooting = false;
+});
+
+// ボタン類のイベント登録
+document.getElementById('btn-jump').addEventListener('touchstart', () => { if(player.position.y <= 0.1) yVelocity = 0.25; });
+document.getElementById('btn-special').addEventListener('touchstart', activateSpecial);
+document.getElementById('btn-sub').addEventListener('touchstart', throwBomb);
+document.getElementById('btn-shift').addEventListener('touchstart', () => isSubmerged = true);
+document.getElementById('btn-shift').addEventListener('touchend', () => isSubmerged = false);
         // --- 設定 ---
         const INK_COLOR = "#00ff00";
         const FIELD_SIZE = 300;
