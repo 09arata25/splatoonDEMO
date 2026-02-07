@@ -12,59 +12,6 @@
         #special-hint { position: absolute; top: 45px; right: 10px; color: #00ff00; font-weight: bold; display: none; text-shadow: 1px 1px 2px black; animation: blink 0.5s infinite alternate; }
         #special-count { position: absolute; top: 70px; right: 10px; color: #fff; font-size: 24px; font-weight: bold; display: none; }
         @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
-       /* ===== タッチUI共通 ===== */
-#touch-controls{
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    user-select: none;
-}
-
-/* ボタン共通 */
-.touch-btn{
-    pointer-events: auto;
-    width: 14vmin;
-    height: 14vmin;
-    max-width: 70px;
-    max-height: 70px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    background: rgba(0,0,0,0.5);
-    color:white;
-    border-radius:50%;
-    border:2px solid white;
-    font-weight:bold;
-    font-size: clamp(12px,2.5vmin,18px);
-}
-
-/* ===== 左ジョイスティック ===== */
-#joystick-base{
-    position:absolute;
-    left: calc(3vmin + env(safe-area-inset-left));
-    bottom: calc(3vmin + env(safe-area-inset-bottom));
-    width:22vmin;
-    height:22vmin;
-    max-width:130px;
-    max-height:130px;
-    pointer-events:auto;
-}
-
-/* ===== 右ボタン群 ===== */
-#touch-controls > div:nth-child(2){
-    position:absolute;
-    right: calc(3vmin + env(safe-area-inset-right));
-    bottom: calc(3vmin + env(safe-area-inset-bottom));
-}
-
-/* ===== 武器ボタン ===== */
-#touch-controls > div:nth-child(3){
-    position:absolute;
-    left:50%;
-    bottom: calc(12vmin + env(safe-area-inset-bottom));
-    transform: translateX(-50%);
-}
-
         #crosshair { position: absolute; top: 50%; left: 50%; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.9); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
     </style>
 </head>
@@ -80,21 +27,6 @@
     <div id="special-hint">SPECIAL READY (E)</div>
     <div id="special-count">TORNADO: 3</div>
     <div id="crosshair"></div>
-    <div id="touch-controls">
-        <div id="joystick-base" style="position: absolute; left: 30px; bottom: 30px; width: 120px; height: 120px; background: rgba(255,255,255,0.2); border-radius: 50%; border: 1px solid rgba(255,255,255,0.4);">
-            <div id="joystick-stick" style="position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; background: rgba(255,255,255,0.6); border-radius: 50%;"></div>
-        </div>
-        <div style="position: absolute; right: 20px; bottom: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-            <div id="btn-sub" class="touch-btn">BOMB</div>
-            <div id="btn-jump" class="touch-btn">JUMP</div>
-            <div id="btn-shift" class="touch-btn" style="background: rgba(0,255,0,0.2);">INK</div>
-            <div id="btn-special" class="touch-btn" style="border-color: #00ff00; color: #00ff00;">SP</div>
-        </div>
-        <div style="position: absolute; left: 50%; bottom: 80px; transform: translateX(-50%); display: flex; gap: 20px;">
-            <div id="btn-w1" style="padding: 10px 20px; background: rgba(0,0,0,0.5); color: white; border: 1px solid white;">1</div>
-            <div id="btn-w2" style="padding: 10px 20px; background: rgba(0,0,0,0.5); color: white; border: 1px solid white;">2</div>
-        </div>
-    </div>
 
     <script type="importmap">
         { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -234,86 +166,7 @@
 
         let move = { fwd: false, bwd: false, lft: false, rgt: false };
         let isShooting = false, isSubmerged = false, yVelocity = 0, pitch = 0;
-        // --- スマホ操作ロジックここから ---
-        const isTouchDevice = 'ontouchstart' in window;
-        if (isTouchDevice) {
-            document.getElementById('touch-controls').style.display = 'block';
-            document.getElementById('ui').style.display = 'none';
-        }
-
-        let joyX = 0, joyY = 0;
-        const stick = document.getElementById('joystick-stick');
-        const base = document.getElementById('joystick-base');
-
-        base.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            const rect = base.getBoundingClientRect();
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-            let dx = touch.clientX - centerX;
-            let dy = touch.clientY - centerY;
-            const dist = Math.min(60, Math.sqrt(dx*dx + dy*dy));
-            const angle = Math.atan2(dy, dx);
-            joyX = (Math.cos(angle) * dist) / 60;
-            joyY = (Math.sin(angle) * dist) / 60;
-            stick.style.transform = `translate(${joyX * 40}px, ${joyY * 40}px)`;
-            move.fwd = joyY < -0.3; move.bwd = joyY > 0.3;
-            move.lft = joyX < -0.3; move.rgt = joyX > 0.3;
-        }, {passive: false});
-
-        base.addEventListener('touchend', () => {
-            joyX = 0; joyY = 0;
-            stick.style.transform = `translate(0px, 0px)`;
-            move.fwd = move.bwd = move.lft = move.rgt = false;
-        });
-
-        let lastTouchX = 0, lastTouchY = 0;
-        window.addEventListener('touchstart', (e) => {
-            const touch = e.touches[0];
-            if (touch.clientX > window.innerWidth / 2) {
-                lastTouchX = touch.clientX;
-                lastTouchY = touch.clientY;
-                if (tornadoStock > 0) throwTornado();
-                else isShooting = true;
-            }
-        });
-
-        window.addEventListener('touchmove', (e) => {
-            const touch = Array.from(e.touches).find(t => t.clientX > window.innerWidth / 2);
-            if (touch) {
-                const dx = touch.clientX - lastTouchX;
-                const dy = touch.clientY - lastTouchY;
-                player.rotation.y -= dx * 0.008;
-                pitch -= dy * 0.005;
-                pitch = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, pitch));
-                cameraHolder.rotation.x = pitch;
-                lastTouchX = touch.clientX;
-                lastTouchY = touch.clientY;
-            }
-        }, {passive: false});
-
-        window.addEventListener('touchend', (e) => {
-            if (Array.from(e.touches).filter(t => t.clientX > window.innerWidth / 2).length === 0) {
-                isShooting = false;
-            }
-        });
-
-        // 各ボタンの機能割り当て
-        const setupBtn = (id, startFn, endFn) => {
-            const el = document.getElementById(id);
-            el.addEventListener('touchstart', (e) => { e.preventDefault(); startFn(); });
-            if(endFn) el.addEventListener('touchend', (e) => { e.preventDefault(); endFn(); });
-        };
-
-        setupBtn('btn-jump', () => { if(player.position.y <= 0.1) yVelocity = 0.25; });
-        setupBtn('btn-sub', throwBomb);
-        setupBtn('btn-special', activateSpecial);
-        setupBtn('btn-shift', () => isSubmerged = true, () => isSubmerged = false);
-        setupBtn('btn-w1', () => { currentWeapon = 'shooter'; document.getElementById('weapon-name').innerText = 'SHOOTER'; });
-        setupBtn('btn-w2', () => { currentWeapon = 'roller'; document.getElementById('weapon-name').innerText = 'ROLLER'; });
-        // --- スマホ操作ロジックここまで ---
-        const raycaster = new THREE.Raycaster();
+       const raycaster = new THREE.Raycaster();
 
         function updateSpecialUI() {
             const bar = document.getElementById('special-bar');
