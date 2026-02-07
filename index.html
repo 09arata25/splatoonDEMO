@@ -2,33 +2,30 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>3D Ink Shooter - Ultra Landing Complete</title>
+    <title>3D Ink Shooter - Triple Tornado Update</title>
     <style>
         body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
-        #ui { position: absolute; top: 10px; left: 10px; color: white; pointer-events: none; text-shadow: 1px 1px 2px black; line-height: 1.6; }
-        #special-ui { 
-            position: absolute; top: 10px; right: 10px; width: 200px; height: 30px; 
-            background: rgba(0,0,0,0.5); border: 2px solid white;
-        }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; pointer-events: none; text-shadow: 1px 1px 2px black; line-height: 1.4; }
+        #weapon-ui { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: white; background: rgba(0,0,0,0.6); padding: 10px 20px; border-radius: 20px; border: 2px solid #00ff00; }
+        #special-ui { position: absolute; top: 10px; right: 10px; width: 200px; height: 30px; background: rgba(0,0,0,0.5); border: 2px solid white; }
         #special-bar { width: 0%; height: 100%; background: #00ff00; transition: width 0.1s; box-shadow: 0 0 15px #00ff00; }
         #special-hint { position: absolute; top: 45px; right: 10px; color: #00ff00; font-weight: bold; display: none; text-shadow: 1px 1px 2px black; animation: blink 0.5s infinite alternate; }
+        #special-count { position: absolute; top: 70px; right: 10px; color: #fff; font-size: 24px; font-weight: bold; display: none; }
         @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
-        #crosshair {
-            position: absolute; top: 50%; left: 50%;
-            width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.9);
-            border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
-        }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.9); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
     </style>
 </head>
 <body>
-<div id="ui">
-    <b>WASD</b>: 移動 | <b>Shift</b>: 潜伏・壁登り<br>
-    <b>左クリック</b>: 射撃 | <b>右クリック / Q</b>: ボム<br>
-    <b>Space</b>: ジャンプ | <b>E</b>: スペシャル<br>
-    <b>I / O</b>: 視点近接・遠隔
-</div>
+    <div id="ui">
+        <b>WASD</b>: 移動 | <b>Shift</b>: 潜伏・壁登り<br>
+        <b>左クリック</b>: 攻撃 | <b>右クリック / Q</b>: ボム<br>
+        <b>Space</b>: ジャンプ | <b>E</b>: スペシャル | <b>I / O</b>: ズーム<br>
+        <b>1</b>: シューター | <b>2</b>: ローラー
+    </div>
+    <div id="weapon-ui">WEAPON: <span id="weapon-name">SHOOTER</span></div>
     <div id="special-ui"><div id="special-bar"></div></div>
     <div id="special-hint">SPECIAL READY (E)</div>
+    <div id="special-count">TORNADO: 3</div>
     <div id="crosshair"></div>
 
     <script type="importmap">
@@ -45,9 +42,15 @@
         const paintableObjects = [];
         const bullets = [];
         const bombs = [];
+        const tornadoes = [];
         let specialPoints = 0;
         const SPECIAL_MAX = 100;
         let isSpecialActive = false;
+        let tornadoStock = 0; // トルネードの残り弾数
+        
+        let currentWeapon = 'shooter';
+        const ROLLER_WIDTH = 2.2; 
+        let lastRollerSwingTime = 0; 
 
         // --- オーディオシステム ---
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -66,27 +69,25 @@
         }
 
         function playShootSound() { playSound(400, 'triangle', 0.15, 0.1, 10); }
+        function playRollerSwingSound() { playSound(150, 'sawtooth', 0.2, 0.3, 10); }
         function playExplosionSound() { playSound(120, 'sine', 0.6, 0.5, 0.01); }
         function playSpecialCharge() { playSound(150, 'sawtooth', 0.4, 0.8, 900); }
-function playSpecialExplosion() {
-    const now = audioCtx.currentTime;
-    // 1. 超低音の地響き (Sine)
-    playSound(40, 'sine', 1.2, 2.5, 1);
-    // 2. 爆発の芯 (Square)
-    playSound(60, 'square', 0.8, 1.2, 20);
-    // 3. 衝撃音 (Noise/Sawtooth)
-    playSound(150, 'sawtooth', 0.6, 0.5, 10);
-    // 4. 残響（金属的な鳴り）
-    const osc = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(300, now);
-    osc.frequency.exponentialRampToValueAtTime(10, now + 2.0);
-    g.gain.setValueAtTime(0.3, now);
-    g.gain.linearRampToValueAtTime(0, now + 2.0);
-    osc.connect(g); g.connect(audioCtx.destination);
-    osc.start(); osc.stop(now + 2.0);
-}
+        function playTornadoSound() { playSound(60, 'brown', 0.3, 1.5, 300); }
+        function playSpecialExplosion() {
+            const now = audioCtx.currentTime;
+            playSound(40, 'sine', 1.2, 2.5, 1);
+            playSound(60, 'square', 0.8, 1.2, 20);
+            playSound(150, 'sawtooth', 0.6, 0.5, 10);
+            const osc = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(300, now);
+            osc.frequency.exponentialRampToValueAtTime(10, now + 2.0);
+            g.gain.setValueAtTime(0.3, now);
+            g.gain.linearRampToValueAtTime(0, now + 2.0);
+            osc.connect(g); g.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 2.0);
+        }
 
         // --- シーン構築 ---
         const scene = new THREE.Scene();
@@ -136,6 +137,27 @@ function playSpecialExplosion() {
         body.position.y = 0.9;
         player.add(body);
         scene.add(player);
+
+        const weaponHolder = new THREE.Group();
+        weaponHolder.position.set(0.8, 1.2, -0.5);
+        player.add(weaponHolder);
+
+        const shooterModel = new THREE.Group();
+        const gunBody = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 1.2), new THREE.MeshStandardMaterial({color: 0x333}));
+        const gunTank = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.6), new THREE.MeshStandardMaterial({color: INK_COLOR}));
+        gunTank.rotation.x = Math.PI/2; gunTank.position.z = -0.2; gunTank.position.y = 0.3;
+        shooterModel.add(gunBody, gunTank);
+        weaponHolder.add(shooterModel);
+
+        const rollerModel = new THREE.Group();
+        const rollerCylinder = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, ROLLER_WIDTH * 2), new THREE.MeshStandardMaterial({color: INK_COLOR}));
+        rollerCylinder.rotation.z = Math.PI/2;
+        const rollerHandle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 2.5), new THREE.MeshStandardMaterial({color: 0x555}));
+        rollerHandle.position.z = 1.25;
+        rollerModel.add(rollerCylinder, rollerHandle);
+        rollerModel.position.set(-0.8, 0, -2);
+        weaponHolder.add(rollerModel);
+
         const cameraHolder = new THREE.Group();
         cameraHolder.position.y = 1.8;
         player.add(cameraHolder);
@@ -149,12 +171,19 @@ function playSpecialExplosion() {
         function updateSpecialUI() {
             const bar = document.getElementById('special-bar');
             const hint = document.getElementById('special-hint');
+            const countDisplay = document.getElementById('special-count');
             const percent = Math.min(100, (specialPoints / SPECIAL_MAX) * 100);
             bar.style.width = percent + '%';
-            hint.style.display = percent >= 100 ? 'block' : 'none';
+            hint.style.display = (percent >= 100 && !isSpecialActive) ? 'block' : 'none';
+            
+            if (tornadoStock > 0) {
+                countDisplay.style.display = 'block';
+                countDisplay.innerText = `TORNADO: ${tornadoStock}`;
+            } else {
+                countDisplay.style.display = 'none';
+            }
         }
 
-        // --- 入力制御 ---
         window.addEventListener('keydown', (e) => {
             if(e.code === 'KeyW') move.fwd = true;
             if(e.code === 'KeyS') move.bwd = true;
@@ -164,15 +193,10 @@ function playSpecialExplosion() {
             if(e.code === 'KeyE') activateSpecial();
             if(e.code === 'Space' && player.position.y <= 0.1) yVelocity = 0.25;
             if(e.code === 'ShiftLeft') isSubmerged = true;
-            // --- カメラ距離の調整用 (keydownイベント内に追加) ---
-if (e.code === 'KeyO') {
-    // カメラを引く (最大距離 15 程度に制限)
-    camera.position.z = Math.min(camera.position.z + 0.5, 15);
-}
-if (e.code === 'KeyI') {
-    // カメラを近づける (最小距離 0.1 程度に制限)
-    camera.position.z = Math.max(camera.position.z - 0.5, 0.1);
-}
+            if(e.code === 'KeyO') camera.position.z = Math.min(camera.position.z + 0.5, 15);
+            if(e.code === 'KeyI') camera.position.z = Math.max(camera.position.z - 0.5, 0.1);
+            if(e.code === 'Digit1') { currentWeapon = 'shooter'; document.getElementById('weapon-name').innerText = 'SHOOTER'; }
+            if(e.code === 'Digit2') { currentWeapon = 'roller'; document.getElementById('weapon-name').innerText = 'ROLLER'; }
         });
         window.addEventListener('keyup', (e) => {
             if(e.code === 'KeyW') move.fwd = false;
@@ -182,7 +206,21 @@ if (e.code === 'KeyI') {
             if(e.code === 'ShiftLeft') isSubmerged = false;
         });
         document.addEventListener('mousedown', (e) => {
-            if (e.button === 0) isShooting = true;
+            if (e.button === 0) {
+                if (tornadoStock > 0) {
+                    throwTornado();
+                    return;
+                }
+                isShooting = true;
+                if (currentWeapon === 'roller' && !isSubmerged && !isSpecialActive) {
+                    const now = Date.now();
+                    if (now - lastRollerSwingTime > 500) { 
+                        if (player.position.y > 0.2) rollerSwing('vertical');
+                        else rollerSwing('horizontal');
+                        lastRollerSwingTime = now;
+                    }
+                }
+            }
             if (e.button === 2) throwBomb();
         });
         document.addEventListener('mouseup', (e) => { if (e.button === 0) isShooting = false; });
@@ -196,177 +234,263 @@ if (e.code === 'KeyI') {
             }
         });
 
-        // --- ペイント・色判定 ---
         function paintAt(obj, uv, sizeFactor = 1) {
             const { ctx, texture, worldSize } = obj.userData;
             if (!uv) return;
-            const u = uv.x * CANVAS_RES;
-            const v = (1 - uv.y) * CANVAS_RES;
-            const targetRealRadius = 4 * sizeFactor; 
-            const pixelRadius = (targetRealRadius / worldSize) * CANVAS_RES;
+            const u = uv.x * CANVAS_RES, v = (1 - uv.y) * CANVAS_RES;
+            const pixelRadius = (4 * sizeFactor / worldSize) * CANVAS_RES;
             ctx.fillStyle = INK_COLOR;
             ctx.beginPath(); ctx.arc(u, v, pixelRadius, 0, Math.PI * 2); ctx.fill();
             texture.needsUpdate = true;
-            if (!isSpecialActive) {
-                specialPoints += 0.25 * sizeFactor;
-                updateSpecialUI();
+            // スペシャル発動中、またはトルネードが場に残っている間はゲージを溜めない
+            if (!isSpecialActive && tornadoStock === 0 && tornadoes.length === 0) { 
+                specialPoints += 0.25 * sizeFactor; 
+                updateSpecialUI(); 
             }
         }
 
         function checkInkColor(obj, uv) {
             if (!uv) return false;
             const { ctx } = obj.userData;
-            const u = Math.floor(uv.x * CANVAS_RES);
-            const v = Math.floor((1 - uv.y) * CANVAS_RES);
+            const u = Math.floor(uv.x * CANVAS_RES), v = Math.floor((1 - uv.y) * CANVAS_RES);
             const data = ctx.getImageData(u, v, 1, 1).data;
             return data[1] > 140 && data[0] < 100;
         }
 
-        // --- ボム ---
         function throwBomb() {
-            if (isSubmerged || isSpecialActive) return;
-            const bomb = new THREE.Mesh(
-                new THREE.SphereGeometry(0.6),
-                new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 0.5 })
-            );
+            if (isSubmerged || isSpecialActive || tornadoStock > 0) return;
+            const bomb = new THREE.Mesh(new THREE.SphereGeometry(0.6), new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 0.5 }));
             bomb.position.copy(player.position).add(new THREE.Vector3(0, 1.5, 0));
-            const targetDir = new THREE.Vector3();
-            camera.getWorldDirection(targetDir);
-            bomb.userData = { 
-                velocity: targetDir.multiplyScalar(0.8).add(new THREE.Vector3(0, 0.4, 0)),
-                timer: 0, life: 1.5
-            };
+            const targetDir = new THREE.Vector3(); camera.getWorldDirection(targetDir);
+            bomb.userData = { velocity: targetDir.multiplyScalar(0.8).add(new THREE.Vector3(0, 0.4, 0)), timer: 0, life: 1.5 };
             scene.add(bomb); bombs.push(bomb);
         }
 
-        // --- スペシャル：ウルトラチャクチ（完全版） ---
-        async function activateSpecial() {
-    if (specialPoints < SPECIAL_MAX || isSpecialActive) return;
-    isSpecialActive = true; specialPoints = 0; updateSpecialUI();
-    playSpecialCharge();
-    
-    // 演出用の巨拳（発光強化）
-    const fistMat = new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 2 });
-    const fistL = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.5, 2.5), fistMat);
-    const fistR = fistL.clone();
-    scene.add(fistL, fistR);
+        function throwTornado() {
+            if (tornadoStock <= 0) return;
+            tornadoStock--;
+            updateSpecialUI();
+            playSpecialCharge();
 
-    // 上昇アニメーション（パーティクルを纏う）
-    for(let i=0; i<30; i++) {
-        player.position.y += 0.55;
-        fistL.position.copy(player.position).add(new THREE.Vector3(-3.5, Math.sin(i*0.8)*1.5, 0));
-        fistR.position.copy(player.position).add(new THREE.Vector3(3.5, Math.cos(i*0.8)*1.5, 0));
-        if(i % 5 === 0) createSplashParticle(player.position);
-        await new Promise(r => setTimeout(r, 16));
-    }
-
-    await new Promise(r => setTimeout(r, 200)); // 頂点で静止
-    playSpecialExplosion(); // 降下開始直前に音を重ねる
-
-    // 急降下
-    while(player.position.y > 0.5) {
-        player.position.y -= 2.5; // 超高速降下
-        fistL.position.y = player.position.y;
-        fistR.position.y = player.position.y;
-        await new Promise(r => setTimeout(r, 10));
-    }
-
-    // 着地：超大量の爆風処理
-    createSplashParticle(player.position);
-    const shockwaves = [];
-    for(let i=0; i<3; i++) { // 3重の波紋
-        const sw = new THREE.Mesh(
-            new THREE.TorusGeometry(1, 0.2, 16, 100),
-            new THREE.MeshBasicMaterial({ color: INK_COLOR, transparent: true, opacity: 1 })
-        );
-        sw.rotation.x = Math.PI / 2;
-        sw.position.copy(player.position);
-        scene.add(sw);
-        shockwaves.push(sw);
-    }
-
-    // 広範囲塗布 (512本に増量：きめ細かさMAX)
-    for (let j = 0; j < 512; j++) {
-        const angle = (j / 512) * Math.PI * 2;
-        const tilt = (Math.random() - 0.85) * Math.PI * 0.6; 
-        const dir = new THREE.Vector3(Math.cos(angle), Math.sin(tilt), Math.sin(angle)).normalize();
-        raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1, 0)), dir);
-        const hits = raycaster.intersectObjects(paintableObjects);
-        if (hits.length > 0 && hits[0].distance < 60) {
-            paintAt(hits[0].object, hits[0].uv, 4.5 * (1 - hits[0].distance / 65) + 1.5);
+            const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: INK_COLOR, emissiveIntensity: 2 }));
+            ball.position.copy(player.position).add(new THREE.Vector3(0, 2, 0));
+            const targetDir = new THREE.Vector3(); camera.getWorldDirection(targetDir);
+            const vel = targetDir.multiplyScalar(1.2).add(new THREE.Vector3(0, 0.3, 0));
+            scene.add(ball);
+            
+            let ballActive = true;
+            const ballUpdate = () => {
+                if(!ballActive) return;
+                ball.position.add(vel);
+                vel.y -= 0.03;
+                raycaster.set(ball.position, vel.clone().normalize());
+                const hits = raycaster.intersectObjects(paintableObjects);
+                if (hits.length > 0 && hits[0].distance < 1.0 || ball.position.y < 0) {
+                    createTornado(ball.position);
+                    scene.remove(ball);
+                    ballActive = false;
+                } else {
+                    requestAnimationFrame(ballUpdate);
+                }
+            };
+            ballUpdate();
         }
-    }
 
-    // 波紋アニメーション
-    let swScale = 0;
-    const swInt = setInterval(() => {
-        swScale += 2.0;
-        shockwaves.forEach((sw, idx) => {
-            const s = swScale * (1 - idx * 0.2);
-            if(s > 0) {
-                sw.scale.set(s, s, s);
-                sw.material.opacity -= 0.03;
+        function rollerSwing(type) {
+            playRollerSwingSound();
+            const count = type === 'horizontal' ? 12 : 8;
+            for (let i = 0; i < count; i++) {
+                const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({ color: INK_COLOR }));
+                bullet.position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
+                const targetDir = new THREE.Vector3(); camera.getWorldDirection(targetDir);
+                const offset = (i - count / 2) / count;
+                const right = new THREE.Vector3().crossVectors(targetDir, new THREE.Vector3(0,1,0)).normalize();
+                const up = new THREE.Vector3().crossVectors(right, targetDir).normalize();
+                if (type === 'horizontal') targetDir.add(right.multiplyScalar(offset * 1.5)).add(up.multiplyScalar(0.2));
+                else targetDir.add(up.multiplyScalar(offset * 1.2)).add(right.multiplyScalar(0.1));
+                bullet.userData.velocity = targetDir.normalize().multiplyScalar(1.2);
+                scene.add(bullet); bullets.push(bullet);
             }
-        });
-        if(shockwaves[0].material.opacity <= 0) {
-            clearInterval(swInt);
-            shockwaves.forEach(sw => scene.remove(sw));
-            scene.remove(fistL, fistR);
-            isSpecialActive = false;
         }
-    }, 20);
-}
-function createSplashParticle(pos) {
-    const group = new THREE.Group();
-    for(let i=0; i<40; i++) {
-        const p = new THREE.Mesh(
-            new THREE.SphereGeometry(Math.random() * 0.5 + 0.2),
-            new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR })
-        );
-        const phi = Math.random() * Math.PI * 2;
-        const theta = Math.random() * Math.PI;
-        const speed = Math.random() * 1.5 + 0.5;
-        p.userData.vel = new THREE.Vector3(
-            Math.sin(theta) * Math.cos(phi) * speed,
-            Math.cos(theta) * speed + 0.5,
-            Math.sin(theta) * Math.sin(phi) * speed
-        );
-        group.add(p);
-    }
-    group.position.copy(pos);
-    scene.add(group);
-    let life = 1.0;
-    const animateP = () => {
-        life -= 0.02;
-        group.children.forEach(p => {
-            p.position.add(p.userData.vel);
-            p.userData.vel.y -= 0.05; // 重力
-            p.scale.multiplyScalar(0.95);
-        });
-        if(life > 0) requestAnimationFrame(animateP);
-        else scene.remove(group);
-    };
-    animateP();
-}
 
-        // --- メインループ ---
+        function createSplashParticle(pos, customSize = 0.5) {
+            const group = new THREE.Group();
+            for(let i=0; i<40; i++) {
+                const p = new THREE.Mesh(new THREE.SphereGeometry(Math.random() * customSize + 0.2), new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR }));
+                const phi = Math.random() * Math.PI * 2, theta = Math.random() * Math.PI, speed = (Math.random() * 1.5 + 0.5) * (customSize * 1.5);
+                p.userData.vel = new THREE.Vector3(Math.sin(theta) * Math.cos(phi) * speed, Math.cos(theta) * speed + 0.5, Math.sin(theta) * Math.sin(phi) * speed);
+                group.add(p);
+            }
+            group.position.copy(pos); scene.add(group);
+            let life = 1.0;
+            const anim = () => { life -= 0.02; group.children.forEach(p => { p.position.add(p.userData.vel); p.userData.vel.y -= 0.05; p.scale.multiplyScalar(0.95); }); if(life > 0) requestAnimationFrame(anim); else scene.remove(group); };
+            anim();
+        }
+
+async function createTornado(pos) {
+            playTornadoSound();
+            const tornadoGroup = new THREE.Group();
+            // 視覚的な太さをさらにスリムに (半径 4)
+            const geom = new THREE.CylinderGeometry(4.5, 4.5, 1000, 20, 1, true);
+            const mat = new THREE.MeshBasicMaterial({ color: INK_COLOR, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+            const cylinder = new THREE.Mesh(geom, mat);
+            cylinder.position.y = 500; 
+            tornadoGroup.add(cylinder);
+            
+            const core = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 1000, 8), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }));
+            core.position.y = 500;
+            tornadoGroup.add(core);
+
+            tornadoGroup.position.copy(pos);
+            scene.add(tornadoGroup);
+            tornadoes.push(tornadoGroup);
+
+            let startTime = Date.now();
+            const duration = 1500;
+
+            const update = () => {
+                const elapsed = Date.now() - startTime;
+                cylinder.rotation.y += 0.5;
+                core.rotation.y -= 0.8;
+                
+                // --- 最小・最速の貫通塗りロジック ---
+                const TORNADO_LIMIT = 4; // 判定半径を4まで縮小
+                
+                paintableObjects.forEach(obj => {
+                    const dx = obj.position.x - pos.x;
+                    const dz = obj.position.z - pos.z;
+                    const distXZ = Math.sqrt(dx * dx + dz * dz);
+
+                    if (distXZ < TORNADO_LIMIT + (obj.userData.worldSize / 2)) {
+                        // スキャン地点を中心からごくわずかな範囲に限定
+                        const scanPoints = [
+                            new THREE.Vector3(0, 0, 0),
+                            new THREE.Vector3(1.5, 0, 0),
+                            new THREE.Vector3(-1.5, 0, 0),
+                            new THREE.Vector3(0, 0, 1.5),
+                            new THREE.Vector3(0, 0, -1.5)
+                        ];
+
+                        scanPoints.forEach(offset => {
+                            const scanPos = pos.clone().add(offset);
+
+                            // 1. 【上下貫通スキャン】
+                            raycaster.set(scanPos.setY(500), new THREE.Vector3(0, -1, 0));
+                            raycaster.far = 1000;
+                            const vHits = raycaster.intersectObject(obj);
+                            // 塗りサイズを 2.5 に絞り、はみ出しを極限までカット
+                            vHits.forEach(hit => paintAt(hit.object, hit.uv, 2.5));
+
+                            // 2. 【壁の制圧】
+                            for (let h = 0; h <= 60; h += 8) {
+                                for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                                    const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+                                    raycaster.set(pos.clone().setY(h), dir);
+                                    raycaster.far = TORNADO_LIMIT; 
+                                    const wallHits = raycaster.intersectObject(obj);
+                                    wallHits.forEach(hit => paintAt(hit.object, hit.uv, 2.0));
+                                }
+                            }
+                        });
+                    }
+                });
+
+                if (elapsed < duration) {
+                    requestAnimationFrame(update);
+                } else {
+                    createSplashParticle(pos, 20); // パーティクルも控えめに
+                    scene.remove(tornadoGroup);
+                    const idx = tornadoes.indexOf(tornadoGroup);
+                    if (idx !== -1) tornadoes.splice(idx, 1);
+                    updateSpecialUI();
+                }
+            };
+            update();
+        }
+
+        async function activateSpecial() {
+            if (specialPoints < SPECIAL_MAX || isSpecialActive || tornadoStock > 0) return;
+            isSpecialActive = true; 
+            specialPoints = 0; 
+            updateSpecialUI();
+
+            if (currentWeapon === 'shooter') {
+                playSpecialCharge();
+                const fistMat = new THREE.MeshStandardMaterial({ color: INK_COLOR, emissive: INK_COLOR, emissiveIntensity: 2 });
+                const fistL = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.5, 2.5), fistMat), fistR = fistL.clone();
+                scene.add(fistL, fistR);
+                for(let i=0; i<30; i++) {
+                    player.position.y += 0.55;
+                    fistL.position.copy(player.position).add(new THREE.Vector3(-3.5, Math.sin(i*0.8)*1.5, 0));
+                    fistR.position.copy(player.position).add(new THREE.Vector3(3.5, Math.cos(i*0.8)*1.5, 0));
+                    if(i % 5 === 0) createSplashParticle(player.position);
+                    await new Promise(r => setTimeout(r, 16));
+                }
+                await new Promise(r => setTimeout(r, 200));
+                playSpecialExplosion();
+                while(player.position.y > 0.5) { player.position.y -= 2.5; await new Promise(r => setTimeout(r, 10)); }
+                player.position.y = 0;
+                createSplashParticle(player.position, 2.0);
+                const shockwaves = [];
+                for(let i=0; i<3; i++) {
+                    const sw = new THREE.Mesh(new THREE.TorusGeometry(1, 0.2, 16, 100), new THREE.MeshBasicMaterial({ color: INK_COLOR, transparent: true, opacity: 1 }));
+                    sw.rotation.x = Math.PI/2; sw.position.copy(player.position); scene.add(sw); shockwaves.push(sw);
+                }
+                for (let j = 0; j < 512; j++) {
+                    const angle = (j / 512) * Math.PI * 2, tilt = (Math.random() - 0.85) * Math.PI * 0.6;
+                    const dir = new THREE.Vector3(Math.cos(angle), Math.sin(tilt), Math.sin(angle)).normalize();
+                    raycaster.set(player.position.clone().add(new THREE.Vector3(0,1,0)), dir);
+                    const hits = raycaster.intersectObjects(paintableObjects);
+                    if (hits.length > 0 && hits[0].distance < 60) paintAt(hits[0].object, hits[0].uv, 4.5 * (1 - hits[0].distance / 65) + 1.5);
+                }
+                let swScale = 0;
+                const swInt = setInterval(() => {
+                    swScale += 2.0; shockwaves.forEach((sw, idx) => { const s = swScale * (1 - idx * 0.2); if(s > 0) { sw.scale.set(s, s, s); sw.material.opacity -= 0.03; } });
+                    if(shockwaves[0].material.opacity <= 0) { clearInterval(swInt); shockwaves.forEach(sw => scene.remove(sw)); scene.remove(fistL, fistR); isSpecialActive = false; updateSpecialUI(); }
+                }, 20);
+            } else {
+                // ローラー：トリプルトルネード・ストックモード
+                tornadoStock = 3;
+                updateSpecialUI();
+                isSpecialActive = false; // 発動処理自体はすぐ終わるが、ストックを消費するまでゲージは溜まらない
+            }
+        }
+
         function animate() {
             requestAnimationFrame(animate);
 
-            // 1. 環境判定
             raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1, 0)), new THREE.Vector3(0, -1, 0));
             const groundHits = raycaster.intersectObjects(paintableObjects);
             const isOnInk = groundHits.length > 0 && checkInkColor(groundHits[0].object, groundHits[0].uv);
             const forwardDir = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
-            
             const rayOrigin = player.position.clone().add(new THREE.Vector3(0, 1, 0)).add(forwardDir.clone().multiplyScalar(-0.5));
             raycaster.set(rayOrigin, forwardDir);
             const wallHits = raycaster.intersectObjects(paintableObjects.filter(o => o.userData.isWall));
             const isFacingPaintedWall = isSubmerged && wallHits.length > 0 && wallHits[0].distance < 2.0 && checkInkColor(wallHits[0].object, wallHits[0].uv);
 
-            // 2. 移動 (スペシャル中は操作・重力停止)
+            shooterModel.visible = (currentWeapon === 'shooter' && !isSubmerged);
+            rollerModel.visible = (currentWeapon === 'roller' && !isSubmerged);
+            weaponHolder.visible = !isSubmerged;
+
             if (!isSpecialActive) {
-                let speed = isSubmerged ? (isOnInk ? 0.38 : 0.05) : 0.18;
+                const isRolling = currentWeapon === 'roller' && isShooting && !isSubmerged && player.position.y <= 0.1 && tornadoStock === 0;
+                
+                if (isRolling) {
+                    rollerModel.position.set(-0.8, -1.2, -1.5);
+                    rollerModel.rotation.x = 0;
+                    for (let x = -1.2; x <= 1.2; x += 0.4) {
+                        const offset = new THREE.Vector3(x, 0, -2).applyQuaternion(player.quaternion);
+                        raycaster.set(player.position.clone().add(offset).add(new THREE.Vector3(0,1,0)), new THREE.Vector3(0,-1,0));
+                        const hits = raycaster.intersectObjects(paintableObjects);
+                        // ローラーの塗りはポイント効率を下げる
+                        if (hits.length > 0) paintAt(hits[0].object, hits[0].uv, 0.4); 
+                    }
+                } else {
+                    rollerModel.position.set(-0.8, 0, -2);
+                    rollerModel.rotation.x = Math.PI/4;
+                }
+
+                let speed = isSubmerged ? (isOnInk ? 0.38 : 0.05) : (isRolling ? 0.3 : 0.18);
                 body.visible = !(isSubmerged && isOnInk);
                 body.scale.set(1, isSubmerged ? 0.2 : 1, 1);
 
@@ -375,8 +499,7 @@ function createSplashParticle(pos) {
                     if (move.fwd) player.position.y += 0.22;
                     if (move.bwd) player.position.y -= 0.22;
                     player.position.y = Math.max(0, player.position.y);
-                    const topCheckOrigin = player.position.clone().add(new THREE.Vector3(0, 1.2, 0));
-                    raycaster.set(topCheckOrigin, forwardDir);
+                    raycaster.set(player.position.clone().add(new THREE.Vector3(0, 1.2, 0)), forwardDir);
                     if (move.fwd && raycaster.intersectObjects(paintableObjects.filter(o => o.userData.isWall)).length === 0) {
                         player.position.y += 1.2; player.position.add(forwardDir.clone().multiplyScalar(2.5));
                     }
@@ -402,30 +525,23 @@ function createSplashParticle(pos) {
                 }
             }
 
-            // 3. ボム更新
             for (let i = bombs.length - 1; i >= 0; i--) {
-                const b = bombs[i];
-                b.position.add(b.userData.velocity); b.userData.velocity.y -= 0.02;
+                const b = bombs[i]; b.position.add(b.userData.velocity); b.userData.velocity.y -= 0.02;
                 raycaster.set(b.position, b.userData.velocity.clone().normalize());
                 if (raycaster.intersectObjects(paintableObjects).length > 0 && raycaster.intersectObjects(paintableObjects)[0].distance < 0.6) b.userData.velocity.set(0,0,0);
-                b.userData.timer += 0.016;
-                const s = 1 + Math.sin(b.userData.timer * 20) * 0.1 + (b.userData.timer / b.userData.life);
-                b.scale.set(s, s, s);
+                b.userData.timer += 0.016; const s = 1 + Math.sin(b.userData.timer * 20) * 0.1 + (b.userData.timer / b.userData.life); b.scale.set(s, s, s);
                 if (b.userData.timer >= b.userData.life) {
                     playExplosionSound();
                     for (let j = 0; j < 16; j++) {
-                        const angle = (j / 16) * Math.PI * 2;
-                        const dir = new THREE.Vector3(Math.cos(angle), -0.5, Math.sin(angle)).normalize();
-                        raycaster.set(b.position, dir);
-                        const eHits = raycaster.intersectObjects(paintableObjects);
+                        const angle = (j / 16) * Math.PI * 2, dir = new THREE.Vector3(Math.cos(angle), -0.5, Math.sin(angle)).normalize();
+                        raycaster.set(b.position, dir); const eHits = raycaster.intersectObjects(paintableObjects);
                         if (eHits.length > 0 && eHits[0].distance < 12) paintAt(eHits[0].object, eHits[0].uv, 3.5);
                     }
                     scene.remove(b); bombs.splice(i, 1);
                 }
             }
 
-            // 4. メイン射撃
-            if (isShooting && !isSubmerged && !isSpecialActive && Date.now() - (animate.lastShoot || 0) > 80) {
+            if (currentWeapon === 'shooter' && isShooting && !isSubmerged && !isSpecialActive && tornadoStock === 0 && Date.now() - (animate.lastShoot || 0) > 80) {
                 playShootSound();
                 const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.35), new THREE.MeshBasicMaterial({ color: INK_COLOR }));
                 bullet.position.copy(player.position).add(new THREE.Vector3(0, 1.5, 0));
@@ -435,20 +551,13 @@ function createSplashParticle(pos) {
             }
 
             for (let i = bullets.length - 1; i >= 0; i--) {
-                const b = bullets[i];
-                const prevPos = b.position.clone();
-                b.position.add(b.userData.velocity);
-                b.userData.velocity.y -= 0.022;
-                const moveVec = b.position.clone().sub(prevPos);
-                raycaster.set(prevPos, moveVec.normalize());
-                raycaster.far = moveVec.length() + 0.5;
+                const b = bullets[i], prevPos = b.position.clone();
+                b.position.add(b.userData.velocity); b.userData.velocity.y -= 0.022;
+                raycaster.set(prevPos, b.position.clone().sub(prevPos).normalize());
+                raycaster.far = b.position.clone().sub(prevPos).length() + 0.5;
                 const hits = raycaster.intersectObjects(paintableObjects);
-                if (hits.length > 0) {
-                    paintAt(hits[0].object, hits[0].uv, 1.2);
-                    scene.remove(b); bullets.splice(i, 1);
-                } else if (b.position.y < -10) {
-                    scene.remove(b); bullets.splice(i, 1);
-                }
+                if (hits.length > 0) { paintAt(hits[0].object, hits[0].uv, 1.2); scene.remove(b); bullets.splice(i, 1); }
+                else if (b.position.y < -10) { scene.remove(b); bullets.splice(i, 1); }
             }
 
             renderer.render(scene, camera);
